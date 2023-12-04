@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"io"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/elazarl/goproxy"
 	utls "github.com/refraction-networking/utls"
@@ -92,6 +94,8 @@ func handleLocalTLS(conn net.Conn) {
 	}
 
 	host := ""
+	method := strings.Split(string(buffer), " ")[0]
+	body := strings.Split(string(buffer), "\r\n\r\n")[1]
 	for _, line := range strings.Split(string(buffer), "\r\n") {
 		if strings.HasPrefix(line, "Host: ") {
 			host = strings.TrimPrefix(line, "Host: ")
@@ -113,35 +117,78 @@ func handleLocalTLS(conn net.Conn) {
 	}
 	defer f.Close()
 
-	uClient := utls.UClient(rConn, &utls.Config{ServerName: host, InsecureSkipVerify: true, KeyLogWriter: f, Certificates: []utls.Certificate{CERT}}, utls.HelloChrome_Auto)
-	if err := uClient.Handshake(); err != nil {
-		log.Printf("uClient.Handshake() error: %s", err)
+	// uClient := utls.UClient(rConn, &utls.Config{ServerName: host, InsecureSkipVerify: true, KeyLogWriter: f, Certificates: []utls.Certificate{CERT}}, utls.HelloChrome_Auto)
+	// if err := uClient.Handshake(); err != nil {
+	// 	log.Printf("uClient.Handshake() error: %s", err)
+	// 	return
+	// }
+
+	uClient := &http.Client{
+		Timeout:   time.Second * 60,
+		Transport: NewBypassJA3Transport(utls.HelloChrome_106_Shuffle),
+	}
+
+	//Create http.Request
+	req, err := http.NewRequest(method, "https://"+host, bytes.NewBuffer([]byte(body)))
+	if err != nil {
+		log.Printf("http.NewRequest() error: %s", err)
 		return
 	}
 
-	log.Println("uClient.Handshake() success")
+	res, err := uClient.Do(req)
+	if err != nil {
+		log.Printf("uClient.Do() error: %s", err)
+		return
+	}
 
-	//Send as request
-	uClient.Write(buffer)
-	recvBuffer := make([]byte, 0)
+	resbuf := make([]byte, 0)
 	for {
-		tmp := make([]byte, 2048)
-		n, err := uClient.Read(tmp)
+		tmp := make([]byte, 1024)
+		n, err := res.Body.Read(tmp)
 		if err != nil {
-			log.Printf("uClient.Read() error: %s", err)
-			return
+			log.Printf("res.Body.Read() error: %s", err)
+			break
 		}
-
-		// conn.Write(tmp[:n])
-		recvBuffer = append(recvBuffer, tmp[:n]...)
-		if n < 2048 {
+		resbuf = append(resbuf, tmp[:n]...)
+		if n < 1024 {
 			break
 		}
 	}
 
-	//hex to string
+	//res.Header to string
+	rawResponse := ""
+	resHeader := ""
+	for k, v := range res.Header {
+		resHeader += k + ": " + strings.Join(v, ",") + "\r\n"
+	}
 
-	//If is redirect then follow
+	rawResponse += "HTTP/1.1 " + res.Status + "\r\n"
+	rawResponse += resHeader + "\r\n"
+	rawResponse += string(resbuf)
+
+	log.Printf("%s", resbuf)
+
+	log.Println("uClient.Handshake() success")
+
+	//Send as request
+	// uClient.Write(buffer)
+	// for {
+	// 	tmp := make([]byte, 2048)
+	// 	n, err := uClient.Read(tmp)
+	// 	if err != nil {
+	// 		log.Printf("uClient.Read() error: %s", err)
+	// 		return
+	// 	}
+
+	// 	conn.Write(tmp[:n])
+	// 	if n < 2048 {
+	// 		break
+	// 	}
+	// }
+
+	// hex to string
+
+	// If is redirect then follow
 	// log.Printf("buffer: %x", string(recvBuffer))
 
 	defer conn.Close()
