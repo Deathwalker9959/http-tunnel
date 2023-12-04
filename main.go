@@ -1,84 +1,72 @@
 package main
 
 import (
-	"bytes"
-	"crypto/tls"
 	"io"
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strings"
-	"time"
 
 	"github.com/elazarl/goproxy"
+	"github.com/imroc/req/v3"
 	utls "github.com/refraction-networking/utls"
 )
 
-var CERT utls.Certificate
-var CERT_TLS tls.Certificate
+var CERT, CERT_ERR = utls.LoadX509KeyPair("server-cert.pem", "server-key.pem")
 
 func main() {
-	proxy := goproxy.NewProxyHttpServer()
-
-	CERT, err := utls.LoadX509KeyPair("server-cert.pem", "server-key.pem")
-	if err != nil {
-		log.Fatalf("utls.LoadX509KeyPair() error: %s", err)
+	if CERT_ERR != nil {
+		log.Fatalf("utls.LoadX509KeyPair() error: %s", CERT_ERR)
 	}
+
+	proxy := goproxy.NewProxyHttpServer()
 
 	httpProxy, err := net.Listen("tcp", ":8443")
 	if err != nil {
-		log.Fatalf("utls.Listen() error: %s", err)
+		log.Fatalf("net.Listen() error: %s", err)
 	}
 
-	// Intercept HTTP requests
-	proxy.OnRequest().HijackConnect(func(req *http.Request, client net.Conn, ctx *goproxy.ProxyCtx) {
-		// make tls connection to the destination with utls
-		serverName := req.URL.Hostname()
-		log.Printf("serverName: %s", serverName)
+	proxy.OnRequest().HijackConnect(handleConnect)
 
-		client.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
-
-		uServer := utls.Server(client, &utls.Config{ServerName: serverName, InsecureSkipVerify: true, Certificates: []utls.Certificate{CERT}})
-		if err := uServer.Handshake(); err != nil {
-			log.Printf("localServer.Handshake() error: %s", err)
-			return
-		}
-
-		//Dial 8443 and pipe
-		dialer, err := net.Dial("tcp", ":8443")
-		if err != nil {
-			log.Printf("net.Dial() error: %s", err)
-			return
-		}
-
-		// Pipe both ways
-		go func() {
-			defer dialer.Close()
-			io.Copy(dialer, uServer)
-		}()
-		go func() {
-			defer uServer.Close()
-			io.Copy(uServer, dialer)
-		}()
-
-	})
-
-	go func() {
-		for {
-			conn, err := httpProxy.Accept()
-			if err != nil {
-				log.Printf("tlsProxy.Accept() error: %s", err)
-				return
-			}
-			go handleLocalTLS(conn)
-		}
-	}()
+	go startHTTPProxy(httpProxy)
 	log.Fatal(http.ListenAndServe(":8081", proxy))
 }
 
+func handleConnect(req *http.Request, client net.Conn, ctx *goproxy.ProxyCtx) {
+	serverName := req.URL.Hostname()
+	log.Printf("serverName: %s", serverName)
+
+	client.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+
+	uServer := utls.Server(client, &utls.Config{ServerName: serverName, InsecureSkipVerify: true, Certificates: []utls.Certificate{CERT}})
+	if err := uServer.Handshake(); err != nil {
+		log.Printf("Handshake error: %s", err)
+		return
+	}
+
+	dialer, err := net.Dial("tcp", ":8443")
+	if err != nil {
+		log.Printf("net.Dial() error: %s", err)
+		return
+	}
+
+	go pipeConnection(dialer, uServer)
+	go pipeConnection(uServer, dialer)
+}
+
+func startHTTPProxy(httpProxy net.Listener) {
+	for {
+		conn, err := httpProxy.Accept()
+		if err != nil {
+			log.Printf("httpProxy.Accept() error: %s", err)
+			return
+		}
+		go handleLocalTLS(conn)
+		defer conn.Close()
+	}
+}
+
 func handleLocalTLS(conn net.Conn) {
-	// Read buffer
 	buffer := make([]byte, 0)
 	for {
 		tmp := make([]byte, 1024)
@@ -93,106 +81,77 @@ func handleLocalTLS(conn net.Conn) {
 		}
 	}
 
+	bufferStr := string(buffer)
+	headers, body, method, path, host := parseHTTP(bufferStr)
+
+	client := req.C().SetAutoDecodeAllContentType().ImpersonateChrome().SetTLSFingerprintChrome()
+	resp, err := client.R().SetHeaders(headers).SetBody(body).Send(method, "https://"+host+path)
+	if err != nil {
+		log.Printf("Request send error: %s", err)
+		return
+	}
+
+	var respBuilder strings.Builder
+	respBuilder.WriteString("HTTP/1.1 " + resp.Status + "\r\n")
+	for k, v := range resp.Header {
+		respBuilder.WriteString(k + ": " + strings.Join(v, ", ") + "\r\n")
+	}
+	respBuilder.WriteString("\r\n")
+	respBuilder.Write(resp.Bytes())
+
+	conn.Write([]byte(respBuilder.String()))
+	conn.Close()
+}
+
+func pipeConnection(src, dst net.Conn) {
+	defer src.Close()
+	defer dst.Close()
+	io.Copy(dst, src)
+}
+
+func parseHTTP(bufferStr string) (map[string]string, string, string, string, string) {
+	// Split the request into header and body
+	parts := strings.SplitN(bufferStr, "\r\n\r\n", 2)
+	headerPart := parts[0]
+	body := ""
+	if len(parts) > 1 {
+		body = parts[1]
+	}
+
+	// Split the header part into lines
+	lines := strings.Split(headerPart, "\r\n")
+	requestLine := lines[0]
+	headerLines := lines[1:]
+
+	// Parse the request line
+	requestLineParts := strings.Split(requestLine, " ")
+	method := requestLineParts[0]
+	path := requestLineParts[1]
+
+	// Initialize headers map
+	headers := make(map[string]string)
+
+	// Variable to hold the value of the Host header
 	host := ""
-	method := strings.Split(string(buffer), " ")[0]
-	body := strings.Split(string(buffer), "\r\n\r\n")[1]
-	for _, line := range strings.Split(string(buffer), "\r\n") {
-		if strings.HasPrefix(line, "Host: ") {
-			host = strings.TrimPrefix(line, "Host: ")
-			break
+
+	// Parse each header line
+	for _, line := range headerLines {
+		if len(line) == 0 {
+			continue
+		}
+		headerParts := strings.SplitN(line, ": ", 2)
+		if len(headerParts) != 2 {
+			continue
+		}
+		headerName := headerParts[0]
+		headerValue := headerParts[1]
+		headers[headerName] = headerValue
+
+		// Special handling for the Host header
+		if headerName == "Host" {
+			host = headerValue
 		}
 	}
 
-	rConn, err := net.Dial("tcp", host+":https")
-	if err != nil {
-		log.Printf("net.Dial() error: %s", err)
-		return
-	}
-
-	//file writer io
-	os.Create("/home/andreas/Desktop/gokeylog")
-	f, err := os.OpenFile("/home/andreas/Desktop/gokeylog", os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
-
-	// uClient := utls.UClient(rConn, &utls.Config{ServerName: host, InsecureSkipVerify: true, KeyLogWriter: f, Certificates: []utls.Certificate{CERT}}, utls.HelloChrome_Auto)
-	// if err := uClient.Handshake(); err != nil {
-	// 	log.Printf("uClient.Handshake() error: %s", err)
-	// 	return
-	// }
-
-	uClient := &http.Client{
-		Timeout:   time.Second * 60,
-		Transport: NewBypassJA3Transport(utls.HelloChrome_106_Shuffle),
-	}
-
-	//Create http.Request
-	req, err := http.NewRequest(method, "https://"+host, bytes.NewBuffer([]byte(body)))
-	if err != nil {
-		log.Printf("http.NewRequest() error: %s", err)
-		return
-	}
-
-	res, err := uClient.Do(req)
-	if err != nil {
-		log.Printf("uClient.Do() error: %s", err)
-		return
-	}
-
-	resbuf := make([]byte, 0)
-	for {
-		tmp := make([]byte, 1024)
-		n, err := res.Body.Read(tmp)
-		if err != nil {
-			log.Printf("res.Body.Read() error: %s", err)
-			break
-		}
-		resbuf = append(resbuf, tmp[:n]...)
-		if n < 1024 {
-			break
-		}
-	}
-
-	//res.Header to string
-	rawResponse := ""
-	resHeader := ""
-	for k, v := range res.Header {
-		resHeader += k + ": " + strings.Join(v, ",") + "\r\n"
-	}
-
-	rawResponse += "HTTP/1.1 " + res.Status + "\r\n"
-	rawResponse += resHeader + "\r\n"
-	rawResponse += string(resbuf)
-
-	log.Printf("%s", resbuf)
-
-	log.Println("uClient.Handshake() success")
-
-	//Send as request
-	// uClient.Write(buffer)
-	// for {
-	// 	tmp := make([]byte, 2048)
-	// 	n, err := uClient.Read(tmp)
-	// 	if err != nil {
-	// 		log.Printf("uClient.Read() error: %s", err)
-	// 		return
-	// 	}
-
-	// 	conn.Write(tmp[:n])
-	// 	if n < 2048 {
-	// 		break
-	// 	}
-	// }
-
-	// hex to string
-
-	// If is redirect then follow
-	// log.Printf("buffer: %x", string(recvBuffer))
-
-	defer conn.Close()
-	defer rConn.Close()
-
-	log.Println("conn.Write() success")
+	return headers, body, method, path, host
 }
