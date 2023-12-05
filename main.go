@@ -16,25 +16,23 @@ var CERT, CERT_ERR = utls.LoadX509KeyPair("server-cert.pem", "server-key.pem")
 
 func main() {
 	if CERT_ERR != nil {
-		log.Fatalf("utls.LoadX509KeyPair() error: %s", CERT_ERR)
+		log.Fatalf("Error loading X.509 key pair: %s", CERT_ERR)
 	}
 
+	go startHTTPProxy()
+	go startHTTPServer()
+
+	select {}
+}
+
+func startHTTPServer() {
 	proxy := goproxy.NewProxyHttpServer()
-
-	httpProxy, err := net.Listen("tcp", ":8443")
-	if err != nil {
-		log.Fatalf("net.Listen() error: %s", err)
-	}
-
 	proxy.OnRequest().HijackConnect(handleConnect)
-
-	go startHTTPProxy(httpProxy)
 	log.Fatal(http.ListenAndServe(":8081", proxy))
 }
 
 func handleConnect(req *http.Request, client net.Conn, ctx *goproxy.ProxyCtx) {
 	serverName := req.URL.Hostname()
-	log.Printf("serverName: %s", serverName)
 
 	client.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
 
@@ -54,7 +52,11 @@ func handleConnect(req *http.Request, client net.Conn, ctx *goproxy.ProxyCtx) {
 	go pipeConnection(uServer, dialer)
 }
 
-func startHTTPProxy(httpProxy net.Listener) {
+func startHTTPProxy() {
+	httpProxy, err := net.Listen("tcp", ":8443")
+	if err != nil {
+		log.Fatalf("Error listening on port 8443: %s", err)
+	}
 	for {
 		conn, err := httpProxy.Accept()
 		if err != nil {

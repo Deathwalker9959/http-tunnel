@@ -4,6 +4,7 @@ go 1.20
 
 require (
 	github.com/elazarl/goproxy v0.0.0-20231117061959-7cc037d33fb5
+	github.com/imroc/req/v3 v3.42.2
 	github.com/refraction-networking/utls v1.5.4
 	golang.org/x/net v0.19.0
 )
@@ -17,7 +18,6 @@ require (
 	github.com/google/pprof v0.0.0-20231203200248-ad67f76aa53d // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
-	github.com/imroc/req/v3 v3.42.2 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/onsi/ginkgo/v2 v2.13.2 // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
