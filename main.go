@@ -2,7 +2,8 @@ package main
 
 import (
 	"flag"
-	"native-http-proxy/internal/http_tunnel"
+
+	"github.com/Deathwalker9959/native-http-proxy/internal/http_tunnel"
 )
 
 func main() {

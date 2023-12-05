@@ -1,4 +1,4 @@
-module native-http-proxy
+module github.com/Deathwalker9959/native-http-proxy
 
 go 1.20
 

@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"native-http-proxy/internal/cert_mgmt"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/Deathwalker9959/native-http-proxy/internal/cert_mgmt"
 
 	"github.com/elazarl/goproxy"
 	"github.com/imroc/req/v3"
