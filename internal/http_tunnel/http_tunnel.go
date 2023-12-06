@@ -152,7 +152,6 @@ func parseHTTP(bufferStr string) (map[string]string, string, string, string, str
 	lines := strings.Split(headerPart, "\r\n")
 	requestLine := lines[0]
 	headerLines := lines[1:]
-
 	// Parse the request line
 	requestLineParts := strings.Split(requestLine, " ")
 	method := requestLineParts[0]
@@ -178,7 +177,7 @@ func parseHTTP(bufferStr string) (map[string]string, string, string, string, str
 		headers[headerName] = headerValue
 
 		// Special handling for the Host header
-		if headerName == "Host" {
+		if strings.ToLower(headerName) == "host" {
 			host = headerValue
 		}
 	}
